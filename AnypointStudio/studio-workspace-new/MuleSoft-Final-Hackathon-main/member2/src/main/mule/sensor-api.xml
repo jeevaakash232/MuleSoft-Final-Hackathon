@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+
+    <!-- ===== APIkit config ===== -->
+    <apikit:config name="sensor-api-config" api="sensor-api.raml"
+                   outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
+
+    <!-- ===== MySQL DB config ===== -->
+    <db:config name="MySQL_Config" doc:name="Database Config">
+        <db:my-sql-connection
+            host="hackathon-jeevaakash444-2d28.d.aivencloud.com"
+            port="22529"
+            user="avnadmin"
+            password="AVNS_8XbJ46bjH_y69FcbH-S"
+            database="iot" />
+    </db:config>
+
+    <!-- ===== Main API flow ===== -->
+    <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="40642efe-e049-4489-874e-defa07d3b5db" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="e836753c-c850-4e59-b51b-1ea1d54997d5" >
+		<db:my-sql-connection host="hackathon-jeevaakash444-2d28.d.aivencloud.com" port="22529" user="avnadmin" password="AVNS_8XbJ46bjH_y69FcbH-S" database="iot" />
+	</db:config>
+	<flow name="sensor-api-main">
+        <http:listener config-ref="HTTP_Listener_config" path="/api/*">
+            <http:response statusCode="#[vars.http default 200]">
+            </http:response>
+            <http:error-response statusCode="#[vars.http default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+            </http:error-response>
+        </http:listener>
+        <apikit:router config-ref="sensor-api-config" />
+        <error-handler>
+			<on-error-propagate type="APIKIT:NOT_FOUND">
+                <ee:transform doc:name="404 Not Found">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Resource not found"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:METHOD_NOT_ALLOWED">
+                <ee:transform doc:name="405 Method Not Allowed">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Method not allowed"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">405</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:NOT_ACCEPTABLE">
+                <ee:transform doc:name="406 Not Acceptable">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Not acceptable"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">406</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:UNSUPPORTED_MEDIA_TYPE">
+                <ee:transform doc:name="415 Unsupported Media Type">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Unsupported media type"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">415</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:NOT_IMPLEMENTED">
+                <ee:transform doc:name="501 Not Implemented">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Not Implemented"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">501</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="d4ff0066-90d1-422b-8548-79e7970db2f0" type="APIKIT:BAD_REQUEST">
+				<ee:transform doc:name="400 Bad Request">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var description = error.description default ""
+---
+if (description contains "/deviceId expected type: String, found: Null")
+{
+    success: false,
+    message: "Invalid Device ID",
+    errorType: "PAYLOAD_ERROR",
+    errorDescription: "Missing or empty required field: deviceId"
+}
+else
+{
+    success: false,
+    message: "Bad request",
+    errorType: "APIKIT:BAD_REQUEST",
+    errorDescription: description
+}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus"><![CDATA[400]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+			</on-error-continue>
+                    </error-handler>
+    </flow>
+
+    <!-- ===== API Console flow ===== -->
+    <flow name="sensor-api-console">
+        <http:listener config-ref="HTTP_Listener_config" path="/console/*">
+            <http:response statusCode="#[vars.http default 200]">
+            </http:response>
+            <http:error-response statusCode="#[vars.http default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+            </http:error-response>
+        </http:listener>
+        <apikit:console config-ref="sensor-api-config" />
+        <error-handler>
+            <on-error-propagate type="APIKIT:NOT_FOUND">
+                <ee:transform doc:name="404 Not Found">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Resource not found"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+        </error-handler>
+    </flow>
+
+    <!-- ===== POST /telemetry — Validation + Device Authentication Flow ===== -->
+    <flow name="post:\telemetry:application\json:sensor-api-config">
+
+        <!-- STEP 1: Save original payload and extract x-api-key BEFORE DB call overwrites payload -->
+        <ee:transform doc:name="Save Payload and API Key">
+            <ee:variables>
+                <ee:set-variable variableName="originalPayload"><![CDATA[%dw 2.0
+output application/java
+---
+payload]]></ee:set-variable>
+                <ee:set-variable variableName="apiKey"><![CDATA[%dw 2.0
+output application/java
+---
+attributes.headers['x-api-key'] default null]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <!-- STEP 2: Validate x-api-key header is present -->
+        <set-variable value="#[attributes.headers['x-api-key'] default null]" doc:name="Set Variable" doc:id="f90ec2d3-41b5-415e-b8b6-611e95067475" variableName="apiKey"/>
+		<set-variable value="#[payload]" doc:name="Set Variable" doc:id="9e348333-3547-4ca8-b4c4-2b05e17e849e" variableName="originalPayload"/>
+		<set-variable value="#[payload[0]]" doc:name="Set Variable" doc:id="a06597a4-fcb5-4d7e-98b3-d6e88c68909d" variableName="authResult"/>
+		<choice doc:name="Check x-api-key header">
+            <when expression="#[vars.apiKey == null or vars.apiKey == '']">
+				<raise-error doc:name="Raise error" doc:id="8b2d4f10-27bf-41fa-b1cb-6c72ba1a77cc" type="APP:VALIDATION_ERROR" description="Not Found"/>
+            </when>
+			<otherwise>
+                <logger level="DEBUG" doc:name="API Key Present" message="api key received successfully" />
+            </otherwise>
+        </choice>
+
+        <!-- STEP 3: Validate deviceId is present and non-blank -->
+        <choice doc:name="Check deviceId">
+            <when expression="#[vars.originalPayload.deviceId == null or (vars.originalPayload.deviceId as String) == '']">
+                <raise-error type="APP:PAYLOAD_ERROR" description="Missing or empty required field: deviceId" />
+            </when>
+			<otherwise>
+                <logger level="DEBUG" doc:name="DeviceId Present" message="device id received successfully" />
+            </otherwise>
+        </choice>
+
+        <!-- STEP 4: Validate readings field is present -->
+
+        <!-- STEP 5: Validate readings array is not empty -->
+
+        <!-- STEP 6: Validate each reading has all required fields -->
+
+        <!-- STEP 7: DB Select — authenticate using SHA2 hash comparison in MySQL -->
+        <db:select doc:name="Authenticate Device" config-ref="MySQL_Config">
+            <db:sql><![CDATA[SELECT device_id, site_id, device_status
+FROM device_registry
+WHERE device_id = :deviceId
+  AND api_key_hash = SHA2(:apiKey, 256)]]></db:sql>
+            <db:input-parameters><![CDATA[#[{
+    deviceId: vars.originalPayload.deviceId,
+    apiKey: vars.apiKey
+}]]]></db:input-parameters>
+        </db:select>
+
+        <!-- STEP 8: Store auth result -->
+        <ee:transform doc:name="Store Auth Result">
+            <ee:variables>
+                <ee:set-variable variableName="authResult"><![CDATA[%dw 2.0
+output application/java
+---
+if (sizeOf(payload) > 0) payload[0] else null]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <!-- STEP 9: Check authentication result -->
+        <choice doc:name="Authentication Check">
+            <when expression="#[vars.authResult == null]">
+                <logger level="WARN" doc:name="Log Auth Failure"
+                        message="#['Authentication failed for deviceId: ' ++ (vars.originalPayload.deviceId default 'unknown')]" />
+                <ee:transform doc:name="401 Unauthorized">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Unauthorized",
+    errorType: "AUTH:INVALID_CREDENTIALS",
+    errorDescription: "Invalid device ID or API key"
+}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">401</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </when>
+            <otherwise>
+                <!-- STEP 10: Check device status -->
+                <choice doc:name="Device Status Check">
+                    <when expression="#[vars.authResult.device_status == 'INACTIVE']">
+                        <logger level="WARN" doc:name="Log Inactive Device"
+                                message="#['Device is INACTIVE: ' ++ vars.authResult.device_id]" />
+                        <ee:transform doc:name="403 Forbidden">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Forbidden: device is inactive",
+    errorType: "AUTH:DEVICE_INACTIVE",
+    errorDescription: "Device is not active"
+}]]></ee:set-payload>
+                            </ee:message>
+                            <ee:variables>
+                                <ee:set-variable variableName="httpStatus">403</ee:set-variable>
+                            </ee:variables>
+                        </ee:transform>
+                    </when>
+                    <otherwise>
+                        <logger level="INFO" doc:name="Log Auth Success"
+                                message="#['Authentication successful for device: ' ++ vars.authResult.device_id ++ ' site: ' ++ vars.authResult.site_id]" />
+                        <!-- Hand the readings array to process-readings-flow (Part 2) -->
+                        <set-payload doc:name="Set payload to readings array"
+                                     value="#[vars.originalPayload.readings]"
+                                     mimeType="application/java" />
+                        <flow-ref doc:name="process-readings-flow" name="process-readings-flow" />
+                    </otherwise>
+                </choice>
+            </otherwise>
+        </choice>
+
+        <!-- Flow-level error handler -->
+        <error-handler>
+            <on-error-propagate type="DB:CONNECTIVITY" doc:name="DB Connectivity Error">
+                <logger level="ERROR" doc:name="Log DB Error"
+                        message="#['Database connectivity failure: ' ++ error.description]" />
+                <ee:transform doc:name="500 DB Error">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Internal server error: database unavailable",
+    errorType: "DB:CONNECTIVITY",
+    errorDescription: "The service is temporarily unavailable. Please try again later."
+}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">500</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="DB:BAD_SQL_SYNTAX" doc:name="DB SQL Error">
+                <logger level="ERROR" doc:name="Log SQL Error"
+                        message="#['SQL error: ' ++ error.description]" />
+                <ee:transform doc:name="500 SQL Error">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Internal server error",
+    errorType: "DB:BAD_SQL_SYNTAX",
+    errorDescription: "A database query error occurred."
+}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">500</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="8d5815be-31fc-4ce5-a8b8-a5242eedfdd1" type="APP:VALIDATION_ERROR">
+				<logger level="INFO" doc:name="api error handler" doc:id="39bf7415-aef4-4990-b518-69b4dc58322a" message="#['API error: ' ++ error.description]"/>
+				<ee:transform doc:name="Transform Message" doc:id="844d0dc4-adb8-4a43-ab8b-c839fc81ba76" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "api not found",
+    errorType: error.errorType.identifier,
+    errorDescription: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="2e8fbba3-3bfa-48a0-ac54-9df46a744976" type="APP:PAYLOAD_ERROR">
+				<logger level="INFO" doc:name="original payload error" doc:id="b11ed16f-3425-4e3b-8907-832d4480bd56" message="#['PAYLOAD error: ' ++ error.description]"/>
+				<ee:transform doc:name="Transform Message" doc:id="d5663c4c-b12c-4d16-800d-2a21aafbb2ef">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Invalid Device ID",
+    errorType: error.errorType.identifier,
+    errorDescription: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="35e23d7c-25ac-44d9-bc3e-5ceb5d6fb3a8" type="ANY">
+				<logger level="INFO" doc:name="Any Error" doc:id="eb90bb6d-bdec-47f0-aa3e-83d21cd0c96c" message="#[error.description]"/>
+				<ee:transform doc:name="Transform Message" doc:id="3be8a76a-9f5f-4160-a67f-44f303f02c4c" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    message: "Internal Server Error",
+    errorType: error.errorType.identifier,
+    errorDescription: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+        </error-handler>
+
+    </flow>
+
+</mule>

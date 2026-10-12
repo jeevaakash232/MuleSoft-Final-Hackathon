@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core    http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/db      http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/vm      http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+
+    <!-- ================================================================
+         FLOW 3 — Batch Consumer
+         Responsibilities:
+           1. VM Listener  — consume from telemetry-queue
+           2. Logger       — log message receipt + correlation ID
+           3. Transform    — parse and normalize telemetry batch
+           4. Flow-ref     — route to Flow 4 (db-writer-flow)
+           + DLQ sub-flow  — called from Flow 4 when DB is unavailable
+         ================================================================ -->
+
+    <!-- DLQ VM config -->
+    <vm:config name="DLQ_VM_Config" doc:name="DLQ VM Config">
+        <vm:queues>
+            <vm:queue queueName="telemetry-dlq" queueType="PERSISTENT" />
+        </vm:queues>
+    </vm:config>
+
+    <!-- ================================================================
+         MAIN CONSUMER FLOW
+         ================================================================ -->
+    <flow name="telemetry-batch-consumer-flow" doc:name="Telemetry Batch Consumer Flow">
+
+        <!-- STEP 1: VM Listener — Source queue from Flow 2 VM Publish -->
+        <vm:listener doc:name="VM Listener telemetry-queue"
+                     config-ref="Telemetry_VM_Config"
+                     queueName="telemetry-queue"
+                     numberOfConsumers="4" />
+
+        <!-- STEP 2: Logger — Log message receipt and correlation ID -->
+        <logger doc:name="Log message receipt" level="INFO"
+                message="#['[FLOW3] Received | correlationId: ' ++ (payload.correlationId default 'N/A')]" />
+
+        <!-- STEP 3: Transform Message — Parse and normalize the received telemetry batch -->
+        <ee:transform doc:name="Normalise Telemetry Batch">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var msg    = if (payload is String) read(payload, "application/json") else payload
+var rawTs  = (msg.readingTimestamp default msg.timestamp default "2000-01-01T00:00:00Z") as String
+var mysqlTs = rawTs
+    replace "T" with " "
+    replace /Z$/  with ""
+    replace /\.[0-9]+$/ with ""
+    replace /\+[0-9]{2}:[0-9]{2}$/ with ""
+---
+{
+    correlationId:   msg.correlationId   default "",
+    deviceId:        msg.deviceId        default "",
+    siteId:          msg.siteId          default "",
+    firmwareVersion: msg.firmwareVersion default "",
+    batchId:         msg.batchId         default "",
+    metricName:      upper(msg.metricName default ""),
+    value:           msg.value as Number,
+    unit:            msg.unit            default "",
+    readingTimestamp: mysqlTs,
+    quality:         msg.quality         default "GOOD",
+    breachStatus:    msg.breachStatus    default "NORMAL"
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <!-- STEP 4: Log normalised -->
+        <logger doc:name="Log normalised" level="INFO"
+                message="#['[FLOW3] Normalised | deviceId: ' ++ payload.deviceId ++ ' | metric: ' ++ payload.metricName ++ ' | value: ' ++ (payload.value as String)]" />
+
+        <!-- STEP 5: Flow Reference → Flow 4 (db-writer-flow) -->
+        <flow-ref doc:name="Flow Reference to db-writer-flow"
+                  name="db-writer-flow" />
+
+        <!-- Flow-level error handler -->
+        <error-handler>
+            <on-error-continue doc:name="Handle flow errors" type="ANY"
+                               enableNotifications="true" logException="true">
+                <logger doc:name="Log flow error" level="ERROR"
+                        message="#['[FLOW3] Unexpected error: ' ++ (error.description default 'unknown')]" />
+            </on-error-continue>
+        </error-handler>
+
+    </flow>
+
+    <!-- ================================================================
+         DLQ PRIVATE FLOW
+         Called from Flow 4 when DB is unavailable.
+         Stores the failed reading in telemetry-dlq for later retry.
+         ================================================================ -->
+    <flow name="dlq-handler-flow" doc:name="DLQ Handler Flow">
+
+        <!-- payload = { reading, errorType, reason, deviceId, correlationId } -->
+        <logger doc:name="Log DLQ received" level="ERROR"
+                message="#['[DLQ] DB unavailable — storing in DLQ | deviceId: ' ++ (payload.deviceId default 'N/A') ++ ' | metric: ' ++ (payload.reading.metricName default 'N/A') ++ ' | reason: ' ++ (payload.reason default 'unknown')]" />
+
+        <vm:publish doc:name="Publish to telemetry-dlq"
+                    config-ref="DLQ_VM_Config"
+                    queueName="telemetry-dlq">
+            <vm:content><![CDATA[#[output application/json --- payload]]]></vm:content>
+        </vm:publish>
+
+        <logger doc:name="Log DLQ stored" level="WARN"
+                message="#['[DLQ] Reading stored in DLQ successfully | deviceId: ' ++ (payload.deviceId default 'N/A') ++ ' | metric: ' ++ (payload.reading.metricName default 'N/A')]" />
+
+        <error-handler>
+            <on-error-continue doc:name="Handle DLQ errors" type="ANY"
+                               enableNotifications="true" logException="true">
+                <logger doc:name="Log DLQ error" level="ERROR"
+                        message="#['[DLQ] Failed to store in DLQ: ' ++ (error.description default 'unknown')]" />
+            </on-error-continue>
+        </error-handler>
+
+    </flow>
+
+</mule>

@@ -5,15 +5,16 @@
       xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
       xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
       xmlns:http="http://www.mulesoft.org/schema/mule/http"
-      xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:schemaLocation="
         http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
         http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
         http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
         http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
-        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
-        http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+
+    <!-- ===== Threshold configuration loaded from YAML ===== -->
+    <configuration-properties doc:name="Metric Thresholds Config" file="metric-thresholds.yaml" />
 
     <!-- ===== APIkit config ===== -->
     <apikit:config name="sensor-api-config" api="sensor-api.raml"
@@ -29,18 +30,6 @@
             database="iot" />
     </db:config>
 
-    <!-- ===== VM queue for telemetry readings ===== -->
-    <vm:config name="Telemetry_VM_Config" doc:name="Telemetry VM Config">
-        <vm:queues>
-            <vm:queue queueName="telemetry-queue" queueType="PERSISTENT" />
-        </vm:queues>
-    </vm:config>
-
-    <!-- ===== Test listener on port 8082 (bypasses APIkit auth for testing) ===== -->
-    <http:listener-config name="Test_HTTP_Listener_config" doc:name="Test HTTP Listener config">
-        <http:listener-connection host="0.0.0.0" port="8082" />
-    </http:listener-config>
-
     <!-- ===== Main API flow ===== -->
     <http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="40642efe-e049-4489-874e-defa07d3b5db" >
 		<http:listener-connection host="0.0.0.0" port="8081" />
@@ -50,9 +39,9 @@
 	</db:config>
 	<flow name="sensor-api-main">
         <http:listener config-ref="HTTP_Listener_config" path="/api/*">
-            <http:response statusCode="#[vars.http default 200]">
+            <http:response statusCode="#[vars.httpStatus default (vars.http default 200)]">
             </http:response>
-            <http:error-response statusCode="#[vars.http default 500]">
+            <http:error-response statusCode="#[vars.httpStatus default (vars.http default 500)]">
                 <http:body><![CDATA[#[payload]]]></http:body>
             </http:error-response>
         </http:listener>
@@ -184,23 +173,8 @@ output application/json
     <flow name="post:\telemetry:application\json:sensor-api-config">
 
         <!-- STEP 1: Save original payload and extract x-api-key BEFORE DB call overwrites payload -->
-        <ee:transform doc:name="Save Payload and API Key">
-            <ee:variables>
-                <ee:set-variable variableName="originalPayload"><![CDATA[%dw 2.0
-output application/java
----
-payload]]></ee:set-variable>
-                <ee:set-variable variableName="apiKey"><![CDATA[%dw 2.0
-output application/java
----
-attributes.headers['x-api-key'] default null]]></ee:set-variable>
-            </ee:variables>
-        </ee:transform>
-
-        <!-- STEP 2: Validate x-api-key header is present -->
-        <set-variable value="#[attributes.headers['x-api-key'] default null]" doc:name="Set Variable" doc:id="f90ec2d3-41b5-415e-b8b6-611e95067475" variableName="apiKey"/>
-		<set-variable value="#[payload]" doc:name="Set Variable" doc:id="9e348333-3547-4ca8-b4c4-2b05e17e849e" variableName="originalPayload"/>
-		<set-variable value="#[payload[0]]" doc:name="Set Variable" doc:id="a06597a4-fcb5-4d7e-98b3-d6e88c68909d" variableName="authResult"/>
+        <set-variable value="#[attributes.headers['x-api-key'] default null]" doc:name="Set apiKey" doc:id="f90ec2d3-41b5-415e-b8b6-611e95067475" variableName="apiKey"/>
+		<set-variable value="#[payload]" doc:name="Set originalPayload" doc:id="9e348333-3547-4ca8-b4c4-2b05e17e849e" variableName="originalPayload"/>
 		<choice doc:name="Check x-api-key header">
             <when expression="#[vars.apiKey == null or vars.apiKey == '']">
 				<raise-error doc:name="Raise error" doc:id="8b2d4f10-27bf-41fa-b1cb-6c72ba1a77cc" type="APP:VALIDATION_ERROR" description="Not Found"/>
@@ -238,37 +212,18 @@ WHERE device_id = :deviceId
 }]]]></db:input-parameters>
         </db:select>
 
-        <!-- STEP 8: Store auth result -->
-        <ee:transform doc:name="Store Auth Result">
-            <ee:variables>
-                <ee:set-variable variableName="authResult"><![CDATA[%dw 2.0
-output application/java
----
-if (sizeOf(payload) > 0) payload[0] else null]]></ee:set-variable>
-            </ee:variables>
-        </ee:transform>
+        <!-- STEP 8: Store auth result — null if device not found -->
+        <set-variable doc:name="Store Auth Result" variableName="authResult"
+            value="#[if (sizeOf(payload) > 0) payload[0] else null]" />
 
         <!-- STEP 9: Check authentication result -->
         <choice doc:name="Authentication Check">
             <when expression="#[vars.authResult == null]">
                 <logger level="WARN" doc:name="Log Auth Failure"
                         message="#['Authentication failed for deviceId: ' ++ (vars.originalPayload.deviceId default 'unknown')]" />
-                <ee:transform doc:name="401 Unauthorized">
-                    <ee:message>
-                        <ee:set-payload><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Unauthorized",
-    errorType: "AUTH:INVALID_CREDENTIALS",
-    errorDescription: "Invalid device ID or API key"
-}]]></ee:set-payload>
-                    </ee:message>
-                    <ee:variables>
-                        <ee:set-variable variableName="httpStatus">401</ee:set-variable>
-                    </ee:variables>
-                </ee:transform>
+                <set-variable doc:name="Set httpStatus 401" variableName="httpStatus" value="401" />
+                <set-payload doc:name="401 Unauthorized" mimeType="application/json"
+                    value='#[output application/json --- { "success": false, "message": "Unauthorized", "errorType": "AUTH:INVALID_CREDENTIALS", "errorDescription": "Invalid device ID or API key" }]' />
             </when>
             <otherwise>
                 <!-- STEP 10: Check device status -->
@@ -276,31 +231,55 @@ output application/json
                     <when expression="#[vars.authResult.device_status == 'INACTIVE']">
                         <logger level="WARN" doc:name="Log Inactive Device"
                                 message="#['Device is INACTIVE: ' ++ vars.authResult.device_id]" />
-                        <ee:transform doc:name="403 Forbidden">
-                            <ee:message>
-                                <ee:set-payload><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Forbidden: device is inactive",
-    errorType: "AUTH:DEVICE_INACTIVE",
-    errorDescription: "Device is not active"
-}]]></ee:set-payload>
-                            </ee:message>
-                            <ee:variables>
-                                <ee:set-variable variableName="httpStatus">403</ee:set-variable>
-                            </ee:variables>
-                        </ee:transform>
+                        <set-variable doc:name="Set httpStatus 403" variableName="httpStatus" value="403" />
+                        <set-payload doc:name="403 Forbidden" mimeType="application/json"
+                            value='#[output application/json --- { "success": false, "message": "Forbidden: device is inactive", "errorType": "AUTH:DEVICE_INACTIVE", "errorDescription": "Device is not active" }]' />
                     </when>
                     <otherwise>
                         <logger level="INFO" doc:name="Log Auth Success"
-                                message="#['Authentication successful for device: ' ++ vars.authResult.device_id ++ ' site: ' ++ vars.authResult.site_id]" />
-                        <!-- Hand the readings array to process-readings-flow (Part 2) -->
-                        <set-payload doc:name="Set payload to readings array"
-                                     value="#[vars.originalPayload.readings]"
-                                     mimeType="application/java" />
-                        <flow-ref doc:name="process-readings-flow" name="process-readings-flow" />
+                                message="Authentication successful" />
+
+                        <!-- For Each: iterate readings and seed sensor_current_value with PENDING
+                             ONLY for readings whose timestamp falls inside the configured window.
+                             Out-of-window readings are skipped here — they will be rejected by
+                             timestamp-subflow in process-readings-flow and must not create a DB row.
+                             The downstream process-readings-flow upserts again with the actual
+                             breachStatus once threshold evaluation completes. -->
+                        <foreach doc:name="For Each reading - seed sensor_current_value"
+                                 doc:id="2357c1c5-02c4-4fbb-94d8-a4b3ac8bc802"
+                                 collection="#[vars.originalPayload.readings]">
+
+                            <db:insert doc:name="DB Insert sensor_current_value - seed current value"
+                                       doc:id="d62cf084-8ab8-43c0-843f-3d52f9be62ae"
+                                       config-ref="MySQL_Config">
+                                <db:sql><![CDATA[INSERT INTO sensor_current_value
+    (device_id, metric_name, metric_value, unit, reading_timestamp, breach_status, updated_at)
+VALUES
+    (:deviceId, :metricName, :metricValue, :unit, :readingTimestamp, 'PENDING', CURRENT_TIMESTAMP)
+ON DUPLICATE KEY UPDATE
+    metric_value      = IF(VALUES(reading_timestamp) > reading_timestamp, VALUES(metric_value),      metric_value),
+    unit              = IF(VALUES(reading_timestamp) > reading_timestamp, VALUES(unit),              unit),
+    breach_status     = IF(VALUES(reading_timestamp) > reading_timestamp, 'PENDING',                 breach_status),
+    updated_at        = IF(VALUES(reading_timestamp) > reading_timestamp, CURRENT_TIMESTAMP,         updated_at),
+    reading_timestamp = IF(VALUES(reading_timestamp) > reading_timestamp, VALUES(reading_timestamp), reading_timestamp)]]></db:sql>
+                                <db:input-parameters><![CDATA[#[{
+    deviceId:         vars.originalPayload.deviceId,
+    metricName:       payload.metricName,
+    metricValue:      payload.value,
+    unit:             payload.unit,
+    readingTimestamp: (((payload.timestamp as DateTime {format: "yyyy-MM-dd'T'HH:mm:ssXXX"}) >> "UTC") as String {format: "yyyy-MM-dd HH:mm:ss"})
+}]]]></db:input-parameters>
+                            </db:insert>
+
+                        </foreach>
+
+                        <!-- Restore originalPayload after the foreach because each db:insert
+                             overwrites payload with an affectedRows result map. -->
+                        <set-variable doc:name="Restore originalPayload after foreach"
+                            variableName="originalPayload"
+                            value="#[vars.originalPayload]" />
+
+                        <flow-ref doc:name="Flow Reference" doc:id="e6f08849-3dcc-47e9-94c1-22cb3d93b358" name="test-process-readings-flow"/>
                     </otherwise>
                 </choice>
             </otherwise>
@@ -311,90 +290,33 @@ output application/json
             <on-error-propagate type="DB:CONNECTIVITY" doc:name="DB Connectivity Error">
                 <logger level="ERROR" doc:name="Log DB Error"
                         message="#['Database connectivity failure: ' ++ error.description]" />
-                <ee:transform doc:name="500 DB Error">
-                    <ee:message>
-                        <ee:set-payload><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Internal server error: database unavailable",
-    errorType: "DB:CONNECTIVITY",
-    errorDescription: "The service is temporarily unavailable. Please try again later."
-}]]></ee:set-payload>
-                    </ee:message>
-                    <ee:variables>
-                        <ee:set-variable variableName="httpStatus">500</ee:set-variable>
-                    </ee:variables>
-                </ee:transform>
+                <set-variable doc:name="Set httpStatus 500" variableName="httpStatus" value="500" />
+                <set-payload doc:name="500 DB Error" mimeType="application/json"
+                    value='#[output application/json --- { "success": false, "message": "Internal server error: database unavailable", "errorType": "DB:CONNECTIVITY", "errorDescription": "The service is temporarily unavailable. Please try again later." }]' />
             </on-error-propagate>
             <on-error-propagate type="DB:BAD_SQL_SYNTAX" doc:name="DB SQL Error">
                 <logger level="ERROR" doc:name="Log SQL Error"
                         message="#['SQL error: ' ++ error.description]" />
-                <ee:transform doc:name="500 SQL Error">
-                    <ee:message>
-                        <ee:set-payload><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Internal server error",
-    errorType: "DB:BAD_SQL_SYNTAX",
-    errorDescription: "A database query error occurred."
-}]]></ee:set-payload>
-                    </ee:message>
-                    <ee:variables>
-                        <ee:set-variable variableName="httpStatus">500</ee:set-variable>
-                    </ee:variables>
-                </ee:transform>
+                <set-variable doc:name="Set httpStatus 500" variableName="httpStatus" value="500" />
+                <set-payload doc:name="500 SQL Error" mimeType="application/json"
+                    value='#[output application/json --- { "success": false, "message": "Internal server error", "errorType": "DB:BAD_SQL_SYNTAX", "errorDescription": "A database query error occurred." }]' />
             </on-error-propagate>
 			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="8d5815be-31fc-4ce5-a8b8-a5242eedfdd1" type="APP:VALIDATION_ERROR">
 				<logger level="INFO" doc:name="api error handler" doc:id="39bf7415-aef4-4990-b518-69b4dc58322a" message="#['API error: ' ++ error.description]"/>
-				<ee:transform doc:name="Transform Message" doc:id="844d0dc4-adb8-4a43-ab8b-c839fc81ba76" >
-					<ee:message >
-						<ee:set-payload ><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "api not found",
-    errorType: error.errorType.identifier,
-    errorDescription: error.description
-}]]></ee:set-payload>
-					</ee:message>
-				</ee:transform>
+				<set-variable doc:name="Set httpStatus 400" variableName="httpStatus" value="400" />
+				<set-payload doc:name="Validation Error Response" mimeType="application/json"
+					value='#[output application/json --- { "success": false, "message": "api not found", "errorType": error.errorType.identifier, "errorDescription": error.description }]' />
 			</on-error-continue>
 			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="2e8fbba3-3bfa-48a0-ac54-9df46a744976" type="APP:PAYLOAD_ERROR">
 				<logger level="INFO" doc:name="original payload error" doc:id="b11ed16f-3425-4e3b-8907-832d4480bd56" message="#['PAYLOAD error: ' ++ error.description]"/>
-				<ee:transform doc:name="Transform Message" doc:id="d5663c4c-b12c-4d16-800d-2a21aafbb2ef">
-					<ee:message>
-						<ee:set-payload><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Invalid Device ID",
-    errorType: error.errorType.identifier,
-    errorDescription: error.description
-}]]></ee:set-payload>
-					</ee:message>
-				</ee:transform>
+				<set-variable doc:name="Set httpStatus 400" variableName="httpStatus" value="400" />
+				<set-payload doc:name="Payload Error Response" mimeType="application/json"
+					value='#[output application/json --- { "success": false, "message": "Invalid Device ID", "errorType": error.errorType.identifier, "errorDescription": error.description }]' />
 			</on-error-continue>
 			<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="35e23d7c-25ac-44d9-bc3e-5ceb5d6fb3a8" type="ANY">
 				<logger level="INFO" doc:name="Any Error" doc:id="eb90bb6d-bdec-47f0-aa3e-83d21cd0c96c" message="#[error.description]"/>
-				<ee:transform doc:name="Transform Message" doc:id="3be8a76a-9f5f-4160-a67f-44f303f02c4c" >
-					<ee:message >
-						<ee:set-payload ><![CDATA[%dw 2.0
-output application/json
----
-{
-    success: false,
-    message: "Internal Server Error",
-    errorType: error.errorType.identifier,
-    errorDescription: error.description
-}]]></ee:set-payload>
-					</ee:message>
-				</ee:transform>
+				<set-payload doc:name="Internal Server Error Response" mimeType="application/json"
+					value='#[output application/json --- { "success": false, "message": "Internal Server Error", "errorType": error.errorType.identifier, "errorDescription": error.description }]' />
 			</on-error-propagate>
         </error-handler>
 

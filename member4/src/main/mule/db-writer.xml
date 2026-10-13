@@ -151,7 +151,7 @@ output application/java
                 <batch:step name="Update-latest-value" doc:name="Update sensor_current_value">
 
                     <logger doc:name="Log current value update" level="INFO"
-                            message="#['[FLOW4] Updating sensor_current_value | metric: ' ++ (payload.metricName default 'N/A')]" />
+                            message="#['[FLOW4] Updating sensor_current_value | metric: ' ++ (vars.readingEnvelope.metricName default 'N/A')]" />
 
                     <db:insert doc:name="Update sensor_current_value if newer"
                                config-ref="MySQL_Config">
@@ -168,12 +168,12 @@ ON DUPLICATE KEY UPDATE
     updated_at        = IF(VALUES(reading_timestamp) > reading_timestamp, CURRENT_TIMESTAMP,         updated_at),
     reading_timestamp = IF(VALUES(reading_timestamp) > reading_timestamp, VALUES(reading_timestamp), reading_timestamp)]]></db:sql>
                         <db:input-parameters><![CDATA[#[{
-    deviceId:         payload.deviceId,
-    metricName:       payload.metricName,
-    metricValue:      payload.value,
-    unit:             payload.unit,
-    readingTimestamp: payload.readingTimestamp,
-    breachStatus:     payload.breachStatus
+    deviceId:         vars.readingEnvelope.deviceId,
+    metricName:       vars.readingEnvelope.metricName,
+    metricValue:      vars.readingEnvelope.value,
+    unit:             vars.readingEnvelope.unit,
+    readingTimestamp: vars.readingEnvelope.readingTimestamp,
+    breachStatus:     vars.readingEnvelope.breachStatus
 }]]]></db:input-parameters>
                     </db:insert>
 
